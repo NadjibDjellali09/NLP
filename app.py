@@ -2,83 +2,102 @@ import streamlit as st
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
-import matplotlib.pyplot as plt
 import librosa
+import os
+from sklearn.preprocessing import StandardScaler
+import warnings
 
-# Load trained components
-model = joblib.load("deception_model.joblib")
-vectorizer = joblib.load("vectorizer.pkl")
-svd = joblib.load("svd.pkl")
-label_encoder = joblib.load("label_encoder.pkl")
+# Suppress warnings for clean UI
+warnings.filterwarnings("ignore")
 
-# App title
+st.set_page_config(page_title="Deception Detection App", layout="centered")
 st.title("🕵️‍♂️ Deception Detection App")
-st.markdown("""
-Welcome to the Deception Detection demo!
-This app uses audio features and transcript analysis to predict if a person is being **truthful** or **deceptive**.
-""")
 
 # Sidebar navigation
 st.sidebar.title("Navigation")
-option = st.sidebar.radio("Go to:", ['Project Overview', 'Learning Curve', 'Test a Sample'])
+page = st.sidebar.radio("Go to", ["📄 Project Overview", "📈 Learning Curve", "🧪 Test the Model"])
 
-# Overview
-if option == 'Project Overview':
-    st.header("🔍 Project Overview")
-    st.write("""
-    **Data Used:**
-    - Audio features (e.g., MFCC, pitch)
-    - Pause and filler features
-    - Transcripts (analyzed using TF-IDF + SVD)
+# Try loading models
+try:
+    model = joblib.load("deception_model.joblib")
+    vectorizer = joblib.load("vectorizer.pkl")
+    svd = joblib.load("svd.pkl")
+    label_encoder = joblib.load("label_encoder.pkl")
+    model_loaded = True
+except FileNotFoundError as e:
+    st.error("🚫 One or more required model files are missing.")
+    st.info("Please make sure these files are in the same folder as this app:\n"
+            "`deception_model.joblib`, `vectorizer.pkl`, `svd.pkl`, `label_encoder.pkl`")
+    model_loaded = False
 
-    **Model:**
-    - Logistic Regression with pipeline
-    - Feature selection using Mutual Information
-    - Trained on ~167 samples
-
-    **Performance:**
-    - Evaluated with cross-validation and test set.
-    - F1 score and ROC-AUC are used as main metrics.
+# 1. Project Overview Page
+if page == "📄 Project Overview":
+    st.header("🔍 Project Summary")
+    st.markdown("""
+    This app demonstrates a **multimodal deception detection system** using:
+    
+    - **Audio Features:** MFCCs, energy, zero-crossing rate, etc.
+    - **Text Features:** TF-IDF of transcripts reduced using SVD
+    - **Classifier:** Logistic Regression with feature selection
+    
+    **Training Highlights:**
+    - ~167 samples
+    - Cross-validated F1 score and ROC-AUC
+    - Trained using `SelectKBest` for top 10 features
+    
+    You can test the model by uploading a `.wav` file and entering the transcript.
     """)
 
-# Learning Curve
-elif option == 'Learning Curve':
+# 2. Learning Curve Page
+elif page == "📈 Learning Curve":
     st.header("📈 Learning Curve")
-    st.image("learning_curve.png", caption="Train vs Validation F1 Scores")
+    if os.path.exists("learning_curve.png"):
+        st.image("learning_curve.png", caption="F1 Score vs Training Size", use_column_width=True)
+    else:
+        st.warning("Learning curve plot not found.")
 
-# Test a Sample
-elif option == 'Test a Sample':
-    st.header("🧪 Test the Model")
-    st.markdown("Upload a `.wav` audio file and its corresponding transcript.")
+# 3. Test the Model Page
+elif page == "🧪 Test the Model":
+    st.header("🎤 Upload Audio and Transcript")
+    st.markdown("Upload a `.wav` file and paste its transcript. The model will predict whether the speech is **truthful** or **deceptive**.")
 
-    uploaded_audio = st.file_uploader("Upload audio (.wav)", type=["wav"])
-    transcript_text = st.text_area("Paste transcript text here", height=150)
+    if not model_loaded:
+        st.warning("Model not loaded. Upload required files to use this section.")
+    else:
+        uploaded_audio = st.file_uploader("Upload .wav audio file", type=["wav"])
+        transcript_text = st.text_area("Paste transcript text here", height=150)
 
-    if uploaded_audio is not None and transcript_text:
-        # Extract audio features (example using librosa)
-        y, sr = librosa.load(uploaded_audio, sr=None)
-        mfccs = np.mean(librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13), axis=1)
-        zcr = np.mean(librosa.feature.zero_crossing_rate(y))
-        energy = np.mean(librosa.feature.rms(y))
+        if uploaded_audio is not None and transcript_text.strip() != "":
+            try:
+                # Load audio
+                y, sr = librosa.load(uploaded_audio, sr=None)
 
-        # Feature vector (same order as training expected)
-        audio_features = np.concatenate([mfccs, [zcr, energy]])
+                # Extract audio features (basic MFCC + energy + ZCR)
+                mfccs = np.mean(librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13), axis=1)
+                zcr = np.mean(librosa.feature.zero_crossing_rate(y))
+                energy = np.mean(librosa.feature.rms(y))
 
-        # Text features
-        tfidf_vec = vectorizer.transform([transcript_text])
-        svd_vec = svd.transform(tfidf_vec)
+                # Audio feature vector
+                audio_features = np.concatenate([mfccs, [zcr, energy]])
 
-        # Combine audio + text features
-        full_features = np.concatenate([audio_features, svd_vec.flatten()])
+                # Text features
+                tfidf_vec = vectorizer.transform([transcript_text])
+                svd_vec = svd.transform(tfidf_vec)
 
-        # Scale and reshape
-        full_features = full_features.reshape(1, -1)
+                # Combine
+                full_input = np.concatenate([audio_features, svd_vec.flatten()])
+                full_input = full_input.reshape(1, -1)
 
-        # Make prediction
-        pred_label = model.predict(full_features)[0]
-        pred_proba = model.predict_proba(full_features)[0]
+                # Predict
+                pred_label = model.predict(full_input)[0]
+                pred_proba = model.predict_proba(full_input)[0]
 
-        label = label_encoder.inverse_transform([pred_label])[0]
-        st.success(f"**Prediction:** {label.upper()} ({pred_proba[pred_label]*100:.1f}% confidence)")
+                label = label_encoder.inverse_transform([pred_label])[0]
+                confidence = pred_proba[pred_label] * 100
 
+                st.success(f"🔍 **Prediction:** `{label.upper()}`")
+                st.metric("Confidence", f"{confidence:.1f}%")
+            except Exception as e:
+                st.error(f"An error occurred during prediction: {e}")
+        else:
+            st.info("Please upload a valid audio file and paste a transcript.")
